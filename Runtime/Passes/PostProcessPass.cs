@@ -171,7 +171,7 @@ namespace UnityEngine.Rendering.Universal.Internal
             m_UseSwapBuffer = false;
         }
 
-        public void SetupFinalPass(in RenderTargetHandle source, bool useSwapBuffer = false)
+        public void SetupFinalPass(in RenderTargetHandle source, in RenderTextureDescriptor finalDesc = new RenderTextureDescriptor(), bool useSwapBuffer = false)
         {
             m_Source = source.id;
             m_Destination = RenderTargetHandle.CameraTarget;
@@ -179,12 +179,26 @@ namespace UnityEngine.Rendering.Universal.Internal
             m_HasFinalPass = false;
             m_EnableSRGBConversionIfNeeded = true;
             m_UseSwapBuffer = useSwapBuffer;
+            m_UseSwapBuffer = useSwapBuffer;
+            m_Descriptor = finalDesc;
         }
+
+        ComputeBuffer easuCB;
+        ComputeBuffer rcasCB;
 
         /// <inheritdoc/>
         public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
         {
             overrideCameraTarget = true;
+
+            var enableFSR = renderingData.cameraData.enableFSR;
+            if (enableFSR)
+            {
+                if (easuCB == null)
+                    easuCB = new ComputeBuffer(4, sizeof(uint) * 4);
+                if (rcasCB == null)
+                    rcasCB = new ComputeBuffer(4, sizeof(uint) * 4);
+            }
 
             if (m_Destination == RenderTargetHandle.CameraTarget)
                 return;
@@ -209,6 +223,20 @@ namespace UnityEngine.Rendering.Universal.Internal
                 return;
 
             cmd.ReleaseTemporaryRT(m_Destination.id);
+
+            cmd.ReleaseTemporaryRT(m_Destination.id);
+
+            if (easuCB != null)
+            {
+                easuCB.Release();
+                easuCB = null;
+            }
+
+            if (rcasCB != null)
+            {
+                rcasCB.Release();
+                rcasCB = null;
+            }
         }
 
         public void ResetHistory()
@@ -277,17 +305,6 @@ namespace UnityEngine.Rendering.Universal.Internal
 
         RenderTextureDescriptor GetCompatibleDescriptor()
             => GetCompatibleDescriptor(m_Descriptor.width, m_Descriptor.height, m_Descriptor.graphicsFormat);
-
-        RenderTextureDescriptor GetUAVCompatibleDescriptor(int width, int height)
-        {
-            var desc = m_Descriptor;
-            desc.depthBufferBits = 0;
-            desc.msaaSamples = 1;
-            desc.width = width;
-            desc.height = height;
-            desc.enableRandomWrite = true;
-            return desc;
-        }
 
         RenderTextureDescriptor GetCompatibleDescriptor(int width, int height, GraphicsFormat format, int depthBufferBits = 0)
         {
@@ -551,6 +568,15 @@ namespace UnityEngine.Rendering.Universal.Internal
                 RenderTargetHandle cameraTargetHandle = RenderTargetHandle.GetCameraTarget(cameraData.xr);
                 RenderTargetIdentifier cameraTarget = (cameraData.targetTexture != null && !cameraData.xr.enabled) ? new RenderTargetIdentifier(cameraData.targetTexture) : cameraTargetHandle.Identifier();
 
+                var oldCameraTarget = cameraTarget;
+                var enableFSR = cameraData.enableFSR;
+                if (enableFSR)
+                {
+                    oldCameraTarget = cameraTarget;
+                    cmd.GetTemporaryRT(ShaderConstants._EASUInputTexture, GetCompatibleDescriptor());
+                    cameraTarget = ShaderConstants._EASUInputTexture;
+                }
+
                 // With camera stacking we not always resolve post to final screen as we might run post-processing in the middle of the stack.
                 if (m_UseSwapBuffer)
                 {
@@ -569,7 +595,7 @@ namespace UnityEngine.Rendering.Universal.Internal
                         colorLoadAction, RenderBufferStoreAction.Store, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.DontCare);
 
                     bool isRenderToBackBufferTarget = cameraTarget == cameraData.xr.renderTarget && !cameraData.xr.renderTargetIsRenderTexture;
-                    if (isRenderToBackBufferTarget)
+                    if (isRenderToBackBufferTarget && !enableFSR)
                         cmd.SetViewport(cameraData.pixelRect);
                     // We y-flip if
                     // 1) we are bliting from render texture to back buffer and
@@ -589,10 +615,13 @@ namespace UnityEngine.Rendering.Universal.Internal
                         cmd.SetRenderTarget(new RenderTargetIdentifier(m_Source, 0, CubemapFace.Unknown, -1),
                             colorLoadAction, RenderBufferStoreAction.Store, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.DontCare);
 
-                        scaleBias = new Vector4(1, 1, 0, 0);;
+                        scaleBias = new Vector4(1, 1, 0, 0); ;
                         cmd.SetGlobalVector(ShaderPropertyId.scaleBias, scaleBias);
                         cmd.DrawProcedural(Matrix4x4.identity, m_BlitMaterial, 0, MeshTopology.Quads, 4, 1, null);
                     }
+
+                    if (enableFSR)
+                        DoFSR(cmd, ref cameraData, oldCameraTarget);
                 }
                 else
 #endif
@@ -601,7 +630,7 @@ namespace UnityEngine.Rendering.Universal.Internal
                     cameraData.renderer.ConfigureCameraTarget(cameraTarget, cameraTarget);
                     cmd.SetViewProjectionMatrices(Matrix4x4.identity, Matrix4x4.identity);
 
-                    if ((m_Destination == RenderTargetHandle.CameraTarget && !m_UseSwapBuffer) || (m_ResolveToScreen && m_UseSwapBuffer))
+                    if ((m_Destination == RenderTargetHandle.CameraTarget && !m_UseSwapBuffer) || (m_ResolveToScreen && m_UseSwapBuffer) && (!enableFSR))
                         cmd.SetViewport(cameraData.pixelRect);
 
                     cmd.DrawMesh(RenderingUtils.fullscreenMesh, Matrix4x4.identity, m_Materials.uber);
@@ -618,6 +647,9 @@ namespace UnityEngine.Rendering.Universal.Internal
                     }
 
                     cmd.SetViewProjectionMatrices(cameraData.camera.worldToCameraMatrix, cameraData.camera.projectionMatrix);
+
+                    if (enableFSR)
+                        DoFSR(cmd, ref cameraData, oldCameraTarget);
                 }
 
                 if (m_UseSwapBuffer && !m_ResolveToScreen)
@@ -1581,6 +1613,86 @@ namespace UnityEngine.Rendering.Universal.Internal
 
         #endregion
 
+        #region EASU
+        void EdgeAdaptiveSpatialUpsampling(CommandBuffer cmd, CameraData cameraData, bool needs_convert_to_srgb)
+        {
+            var easuCS = m_Data.shaders.easuCS;
+            if (needs_convert_to_srgb)
+            {
+                easuCS.EnableKeyword("_AMD_FSR_NEEDS_CONVERT_TO_SRGB");
+            }
+            else
+            {
+                easuCS.DisableKeyword("_AMD_FSR_NEEDS_CONVERT_TO_SRGB");
+            }
+            int viewCount = 1;
+            int kinitialize_idx = easuCS.FindKernel("KInitialize");
+            int kmain_idx = easuCS.FindKernel("KMain");
+            cmd.SetComputeTextureParam(easuCS, kmain_idx, ShaderConstants._EASUInputTexture, ShaderConstants._EASUInputTexture);
+            int srcWidth = m_Descriptor.width;
+            int srcHeight = m_Descriptor.height;
+            int dstWidth = cameraData.pixelWidth;
+            int dstHeight = cameraData.pixelHeight;
+            cmd.SetComputeVectorParam(easuCS, ShaderConstants._EASUViewportSize, new Vector4(srcWidth, srcHeight));
+            cmd.SetComputeVectorParam(easuCS, ShaderConstants._EASUInputImageSize, new Vector4(srcWidth, srcHeight));
+            cmd.GetTemporaryRT(ShaderConstants._EASUOutputTexture, GetUAVCompatibleDescriptor(dstWidth, dstHeight));
+            cmd.SetComputeTextureParam(easuCS, kmain_idx, ShaderConstants._EASUOutputTexture, ShaderConstants._EASUOutputTexture);
+            cmd.SetComputeVectorParam(easuCS, ShaderConstants._EASUOutputSize, new Vector4(dstWidth, dstHeight, 1.0f / dstWidth, 1.0f / dstHeight));
+            cmd.SetComputeBufferParam(easuCS, kinitialize_idx, ShaderConstants._EASUParameters, easuCB);
+            cmd.SetComputeBufferParam(easuCS, kmain_idx, ShaderConstants._EASUParameters, easuCB);
+            cmd.DispatchCompute(easuCS, kinitialize_idx, 1, 1, 1);
+            int DivRoundUp(int x, int y) => (x + y - 1) / y;
+            int dispatchX = DivRoundUp((int)dstWidth, 8);
+            int dispatchY = DivRoundUp((int)dstHeight, 8);
+            cmd.DispatchCompute(easuCS, kmain_idx, dispatchX, dispatchY, viewCount);
+        }
+        #endregion
+
+        #region RCAS
+        void RobustContrastAdaptiveSharpening(CommandBuffer cmd, CameraData cameraData, bool needs_convert_to_srgb)
+        {
+            var rcasCS = m_Data.shaders.rcasCS;
+            if (needs_convert_to_srgb)
+            {
+                rcasCS.EnableKeyword("_AMD_FSR_NEEDS_CONVERT_TO_SRGB");
+            }
+            else
+            {
+                rcasCS.DisableKeyword("_AMD_FSR_NEEDS_CONVERT_TO_SRGB");
+            }
+            int viewCount = 1;
+            int kinitialize_idx = rcasCS.FindKernel("KInitialize");
+            int kmain_idx = rcasCS.FindKernel("KMain");
+            cmd.SetComputeFloatParam(rcasCS, ShaderConstants._RCASScale, 1.0f);
+            cmd.SetComputeTextureParam(rcasCS, kmain_idx, ShaderConstants._RCASInputTexture, ShaderConstants._EASUOutputTexture);
+            int dstWidth = cameraData.pixelWidth;
+            int dstHeight = cameraData.pixelHeight;
+            cmd.GetTemporaryRT(ShaderConstants._RCASOutputTexture, GetUAVCompatibleDescriptor(dstWidth, dstHeight));
+            cmd.SetComputeTextureParam(rcasCS, kmain_idx, ShaderConstants._RCASOutputTexture, ShaderConstants._RCASOutputTexture);
+            cmd.SetComputeBufferParam(rcasCS, kinitialize_idx, ShaderConstants._RCASParameters, rcasCB);
+            cmd.SetComputeBufferParam(rcasCS, kmain_idx, ShaderConstants._RCASParameters, rcasCB);
+            cmd.DispatchCompute(rcasCS, kinitialize_idx, 1, 1, 1);
+            int DivRoundUp(int x, int y) => (x + y - 1) / y;
+            int dispatchX = DivRoundUp((int)dstWidth, 8);
+            int dispatchY = DivRoundUp((int)dstHeight, 8);
+            cmd.DispatchCompute(rcasCS, kmain_idx, dispatchX, dispatchY, viewCount);
+        }
+        #endregion
+
+        #region FSR
+        void DoFSR(CommandBuffer cmd, ref CameraData cameraData, RenderTargetIdentifier dst)
+        {
+            bool needs_convert_to_srgb = !(cameraData.isHdrEnabled || QualitySettings.activeColorSpace == ColorSpace.Gamma);
+            using (new ProfilingScope(cmd, ProfilingSampler.Get(URPProfileId.FSR)))
+            {
+                EdgeAdaptiveSpatialUpsampling(cmd, cameraData, needs_convert_to_srgb);
+                RobustContrastAdaptiveSharpening(cmd, cameraData, needs_convert_to_srgb);
+            }
+            cmd.Blit(ShaderConstants._RCASOutputTexture, dst);
+        }
+        #endregion
+
+
         #region Internal utilities
 
         class MaterialLibrary
@@ -1701,6 +1813,20 @@ namespace UnityEngine.Rendering.Universal.Internal
             public static readonly int _FlareData5 = Shader.PropertyToID("_FlareData5");
 
             public static readonly int _FullscreenProjMat = Shader.PropertyToID("_FullscreenProjMat");
+
+            // Edge Adaptive Spatial Upsampling
+            public static readonly int _EASUInputTexture = Shader.PropertyToID("_EASUInputTexture");
+            public static readonly int _EASUOutputTexture = Shader.PropertyToID("_EASUOutputTexture");
+            public static readonly int _EASUViewportSize = Shader.PropertyToID("_EASUViewportSize");
+            public static readonly int _EASUInputImageSize = Shader.PropertyToID("_EASUInputImageSize");
+            public static readonly int _EASUOutputSize = Shader.PropertyToID("_EASUOutputSize");
+            public static readonly int _EASUParameters = Shader.PropertyToID("_EASUParameters");
+
+            // Robust Contrast Adaptive Sharpening
+            public static readonly int _RCASInputTexture = Shader.PropertyToID("_RCASInputTexture");
+            public static readonly int _RCASScale = Shader.PropertyToID("_RCASScale");
+            public static readonly int _RCASParameters = Shader.PropertyToID("_RCASParameters");
+            public static readonly int _RCASOutputTexture = Shader.PropertyToID("_RCASOutputTexture");
 
             public static readonly int _ScalingSetupTexture = Shader.PropertyToID("_ScalingSetupTexture");
             public static readonly int _UpscaledTexture = Shader.PropertyToID("_UpscaledTexture");

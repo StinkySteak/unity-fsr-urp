@@ -9,6 +9,7 @@ namespace UnityEditor.Rendering.Universal
         {
             public class Styles
             {
+                public static GUIContent AMDFSRtext = EditorGUIUtility.TrTextContent("AMD FSR 1.0", "AMD FidelityFX Super Resolution 1.0 is a cutting edge super-optimized spatial upscaling technology that produces impressive image quality at fast framerates.");
                 public static GUIContent rendererType = EditorGUIUtility.TrTextContent("Renderer", "The series of operations that translates code into visuals. These have different capabilities and performance characteristics.");
 
                 public static GUIContent renderPostProcessing = EditorGUIUtility.TrTextContent("Post Processing", "Enable this to make this camera render post-processing effects.");
