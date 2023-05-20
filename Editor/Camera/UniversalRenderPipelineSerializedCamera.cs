@@ -22,6 +22,7 @@ namespace UnityEditor.Rendering.Universal
         public SerializedProperty antialiasing { get; }
 
         // URP specific properties
+        public SerializedProperty AMDFSR { get; }
         public SerializedProperty renderShadows { get; }
         public SerializedProperty renderDepth { get; }
         public SerializedProperty renderOpaque { get; }
@@ -83,6 +84,7 @@ namespace UnityEditor.Rendering.Universal
             clearDepth = serializedAdditionalDataObject.FindProperty("m_ClearDepth");
 
             // URP specific properties
+            AMDFSR = serializedAdditionalDataObject.FindProperty("m_AMDFSR");
             renderShadows = serializedAdditionalDataObject.FindProperty("m_RenderShadows");
             renderDepth = serializedAdditionalDataObject.FindProperty("m_RequiresDepthTextureOption");
             renderOpaque = serializedAdditionalDataObject.FindProperty("m_RequiresOpaqueTextureOption");

@@ -242,6 +242,8 @@ namespace UnityEngine.Rendering.Universal
         /// </summary>
         public bool resolveFinalTarget;
 
+        public bool enableFSR;
+
         /// <summary>
         /// Camera position in world space.
         /// </summary>
@@ -912,6 +914,7 @@ namespace UnityEngine.Rendering.Universal
         Bloom,
         LensFlareDataDriven,
         MotionVectors,
+        FSR,
 
         FinalBlit
     }

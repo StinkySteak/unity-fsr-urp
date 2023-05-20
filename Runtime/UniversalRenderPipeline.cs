@@ -557,6 +557,8 @@ namespace UnityEngine.Rendering.Universal
             // Update volumeframework before initializing additional camera data
             UpdateVolumeFramework(baseCamera, baseCameraAdditionalData);
             InitializeCameraData(baseCamera, baseCameraAdditionalData, !isStackedRendering, out var baseCameraData);
+            if (baseCameraAdditionalData?.amdFSR != UniversalAdditionalCameraData.AMDFSR.Disabled && !isStackedRendering)
+                baseCameraData.enableFSR = true;
             RenderTextureDescriptor originalTargetDesc = baseCameraData.cameraTargetDescriptor;
 
 #if ENABLE_VR && ENABLE_XR_MODULE
@@ -624,9 +626,12 @@ namespace UnityEngine.Rendering.Universal
 #endif
                         UpdateVolumeFramework(currCamera, currCameraData);
                         InitializeAdditionalCameraData(currCamera, currCameraData, lastCamera, ref overlayCameraData);
+                        if (baseCameraAdditionalData.amdFSR != UniversalAdditionalCameraData.AMDFSR.Disabled && lastCamera)
+                            overlayCameraData.enableFSR = true;
 #if ENABLE_VR && ENABLE_XR_MODULE
                         if (baseCameraData.xr.enabled)
-                            m_XRSystem.UpdateFromCamera(ref overlayCameraData.xr, overlayCameraData);
+                            if (baseCameraData.xr.enabled)
+                                m_XRSystem.UpdateFromCamera(ref overlayCameraData.xr, overlayCameraData);
 #endif
                         RenderSingleCamera(context, overlayCameraData, anyPostProcessingEnabled);
 
@@ -773,6 +778,25 @@ namespace UnityEngine.Rendering.Universal
             cameraData.cameraTargetDescriptor = CreateRenderTextureDescriptor(camera, cameraData.renderScale,
                 cameraData.isHdrEnabled, msaaSamples, needsAlphaChannel, cameraData.requiresOpaqueTexture);
         }
+
+        private struct AMDFSRSettings
+        {
+            public readonly float m_RenderScale;
+            public readonly float m_MipmapBias;
+            public AMDFSRSettings(in float render_scale, in float mipmap_bias)
+            {
+                m_RenderScale = render_scale;
+                m_MipmapBias = mipmap_bias;
+            }
+        };
+
+        private static readonly AMDFSRSettings[] amdFSRSettingsPreset = new AMDFSRSettings[]
+        {
+            new AMDFSRSettings(.77f, -.38f),
+            new AMDFSRSettings(.67f, -.58f),
+            new AMDFSRSettings(.59f, -.79f),
+            new AMDFSRSettings(.50f, -1.0f)
+        };
 
         /// <summary>
         /// Initialize camera data settings common for all cameras in the stack. Overlay cameras will inherit
@@ -975,6 +999,17 @@ namespace UnityEngine.Rendering.Universal
             }
 
             cameraData.SetViewAndProjectionMatrix(camera.worldToCameraMatrix, projectionMatrix);
+
+            if (additionalCameraData != null)
+            {
+                if (additionalCameraData.amdFSR != UniversalAdditionalCameraData.AMDFSR.Disabled)
+                {
+                    settings.msaaSampleCount = 8; // NOTE! You can also use some other AA solutions.
+                    var amdFSRSetting = amdFSRSettingsPreset[(int)additionalCameraData.amdFSR];
+                    cameraData.renderScale = amdFSRSetting.m_RenderScale;
+                    Shader.SetGlobalFloat("amd_fsr_mipmap_bias", amdFSRSetting.m_MipmapBias);
+                }
+            }
 
             cameraData.worldSpaceCameraPos = camera.transform.position;
         }
@@ -1312,50 +1347,50 @@ namespace UnityEngine.Rendering.Universal
             switch (selection)
             {
                 case UpscalingFilterSelection.Auto:
-                {
-                    // The user selected "auto" for their upscaling filter so we should attempt to choose the best filter
-                    // for the current situation. When the current resolution and render scale are compatible with integer
-                    // scaling we use the point sampling filter. Otherwise we just use the default filter (linear).
-                    float pixelScale = (1.0f / renderScale);
-                    bool isIntegerScale = Mathf.Approximately((pixelScale - Mathf.Floor(pixelScale)), 0.0f);
-
-                    if (isIntegerScale)
                     {
-                        float widthScale = (imageSize.x / pixelScale);
-                        float heightScale = (imageSize.y / pixelScale);
+                        // The user selected "auto" for their upscaling filter so we should attempt to choose the best filter
+                        // for the current situation. When the current resolution and render scale are compatible with integer
+                        // scaling we use the point sampling filter. Otherwise we just use the default filter (linear).
+                        float pixelScale = (1.0f / renderScale);
+                        bool isIntegerScale = Mathf.Approximately((pixelScale - Mathf.Floor(pixelScale)), 0.0f);
 
-                        bool isImageCompatible = (Mathf.Approximately((widthScale - Mathf.Floor(widthScale)), 0.0f) &&
-                                                  Mathf.Approximately((heightScale - Mathf.Floor(heightScale)), 0.0f));
-
-                        if (isImageCompatible)
+                        if (isIntegerScale)
                         {
-                            filter = ImageUpscalingFilter.Point;
+                            float widthScale = (imageSize.x / pixelScale);
+                            float heightScale = (imageSize.y / pixelScale);
+
+                            bool isImageCompatible = (Mathf.Approximately((widthScale - Mathf.Floor(widthScale)), 0.0f) &&
+                                                      Mathf.Approximately((heightScale - Mathf.Floor(heightScale)), 0.0f));
+
+                            if (isImageCompatible)
+                            {
+                                filter = ImageUpscalingFilter.Point;
+                            }
                         }
+
+                        break;
                     }
 
-                    break;
-                }
-
                 case UpscalingFilterSelection.Linear:
-                {
-                    // Do nothing since linear is already the default
+                    {
+                        // Do nothing since linear is already the default
 
-                    break;
-                }
+                        break;
+                    }
 
                 case UpscalingFilterSelection.Point:
-                {
-                    filter = ImageUpscalingFilter.Point;
+                    {
+                        filter = ImageUpscalingFilter.Point;
 
-                    break;
-                }
+                        break;
+                    }
 
                 case UpscalingFilterSelection.FSR:
-                {
-                    filter = ImageUpscalingFilter.FSR;
+                    {
+                        filter = ImageUpscalingFilter.FSR;
 
-                    break;
-                }
+                        break;
+                    }
             }
 
             return filter;

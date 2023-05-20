@@ -80,6 +80,12 @@ namespace UnityEngine.Rendering.Universal
 
             [Reload("Shaders/PostProcessing/FinalPost.shader")]
             public Shader finalPostPassPS;
+
+            [Reload("Shaders/PostProcessing/easu.compute")]
+            public ComputeShader easuCS;
+
+            [Reload("Shaders/PostProcessing/rcas.compute")]
+            public ComputeShader rcasCS;
         }
 
         [Serializable, ReloadGroup]

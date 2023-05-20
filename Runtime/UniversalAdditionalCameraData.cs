@@ -258,6 +258,17 @@ namespace UnityEngine.Rendering.Universal
 
         [SerializeField] LayerMask m_VolumeLayerMask = 1; // "Default"
         [SerializeField] Transform m_VolumeTrigger = null;
+
+        public enum AMDFSR
+        {
+            Disabled = -1,
+            UltraQuality = 0,
+            Quality,
+            Balanced,
+            Performance
+        }
+        [SerializeField] AMDFSR m_AMDFSR = AMDFSR.Disabled;
+
         [SerializeField] VolumeFrameworkUpdateMode m_VolumeFrameworkUpdateModeOption = VolumeFrameworkUpdateMode.UsePipelineSettings;
 
         [SerializeField] bool m_RenderPostProcessing = false;
@@ -276,7 +287,7 @@ namespace UnityEngine.Rendering.Universal
         [FormerlySerializedAs("requiresColorTexture"), SerializeField]
         bool m_RequiresColorTexture = false;
 
-        [HideInInspector] [SerializeField] float m_Version = 2;
+        [HideInInspector][SerializeField] float m_Version = 2;
 
         // These persist over multiple frames
         [NonSerialized] MotionVectorsPersistentData m_MotionVectorsPersistentData = new MotionVectorsPersistentData();
@@ -542,6 +553,13 @@ namespace UnityEngine.Rendering.Universal
             get => m_Antialiasing;
             set => m_Antialiasing = value;
         }
+
+        public AMDFSR amdFSR
+        {
+            get => m_AMDFSR;
+            set => m_AMDFSR = value;
+        }
+
 
         /// <summary>
         /// Returns the current anti-aliasing quality used by this camera.
